@@ -1,8 +1,12 @@
 package main
 
 import (
-	"lecture2/utils"
+	"bufio"
+	"fmt"
+	"lecture2/nlp"
 	"lecture2/wordcount"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -13,6 +17,7 @@ type Pair struct {
 
 const workerCount = 4
 const topWordsCount = 100
+const readerWorkerCount = 4
 
 func main() {
 	files := []string{
@@ -22,17 +27,27 @@ func main() {
 		"tom-4.txt",
 	}
 
+	fileJobs := make(chan string, 100)
 	lines := make(chan string, 1000)
 	pairs := make(chan Pair, 1000)
 
 	var readerWg sync.WaitGroup
-	for _, file := range files {
+	for i := 0; i < readerWorkerCount; i++ {
 		readerWg.Add(1)
-		go func(f string) {
+		go func() {
 			defer readerWg.Done()
-			utils.ReadFileLines(f, lines)
-		}(file)
+			for file := range fileJobs {
+				readFileLines(file, lines)
+			}
+		}()
 	}
+
+	go func() {
+		for _, file := range files {
+			fileJobs <- file
+		}
+		close(fileJobs)
+	}()
 
 	go func() {
 		readerWg.Wait()
@@ -60,27 +75,35 @@ func main() {
 
 func mapper(in <-chan string, out chan<- Pair) {
 	for line := range in {
-		words := utils.Tokenize(line)
+		words := nlp.Tokenize(line)
 		counted := make(map[string]int)
-
 		for _, word := range words {
-			if _, ok := utils.Prepositions[word]; ok || !utils.IsRussian(word) {
-				continue
-			}
-			word = utils.Normalize(word)
 			counted[word]++
 		}
-
 		for word, count := range counted {
 			out <- Pair{Word: word, Count: count}
 		}
 	}
 }
 
-func reducer(in <-chan Pair) wordcount.WordCount {
-	result := make(wordcount.WordCount)
+func reducer(in <-chan Pair) nlp.WordCount {
+	result := make(nlp.WordCount)
 	for pair := range in {
 		result[pair.Word] += pair.Count
 	}
 	return result
+}
+
+func readFileLines(filename string, out chan<- string) {
+	file, err := os.Open(filepath.Clean(filename))
+	if err != nil {
+		fmt.Printf("Ошибка открытия файла %s: %v\n", filename, err)
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		out <- scanner.Text()
+	}
 }
