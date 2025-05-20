@@ -27,9 +27,16 @@ func main() {
 		"tom-4.txt",
 	}
 
-	fileJobs := make(chan string, 100)
-	lines := make(chan string, 1000)
-	pairs := make(chan Pair, 1000)
+	fileJobs := make(chan string, len(files))
+	lines := make(chan string, readerWorkerCount)
+	pairs := make(chan Pair, workerCount)
+
+	go func() {
+		for _, file := range files {
+			fileJobs <- file
+		}
+		close(fileJobs)
+	}()
 
 	var readerWg sync.WaitGroup
 	for i := 0; i < readerWorkerCount; i++ {
@@ -41,13 +48,6 @@ func main() {
 			}
 		}()
 	}
-
-	go func() {
-		for _, file := range files {
-			fileJobs <- file
-		}
-		close(fileJobs)
-	}()
 
 	go func() {
 		readerWg.Wait()
