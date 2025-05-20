@@ -1,28 +1,18 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"sort"
-	"strings"
+	"lecture2/utils"
+	"lecture2/wordcount"
 	"sync"
-)
-
-type WordCount map[string]int
-
-var (
-	wordRegex     = regexp.MustCompile(`\p{L}+`)
-	prepositions  = map[string]struct{}{"в": {}, "на": {}, "и": {}, "не": {}, "что": {}, "с": {}, "по": {}, "о": {}, "за": {}, "от": {}, "у": {}, "к": {}, "до": {}, "из": {}, "без": {}, "для": {}, "при": {}, "про": {}, "об": {}, "под": {}, "а": {}, "то": {}, "но": {}, "ли": {}, "же": {}, "ни": {}, "ну": {}}
-	cyrillicCheck = regexp.MustCompile(`^[а-яА-ЯёЁ]+$`)
 )
 
 type Pair struct {
 	Word  string
 	Count int
 }
+
+const workerCount = 4
+const topWordsCount = 100
 
 func main() {
 	files := []string{
@@ -32,52 +22,52 @@ func main() {
 		"tom-4.txt",
 	}
 
-	mapOut := make(chan Pair, 1000)
-	var wg sync.WaitGroup
+	lines := make(chan string, 1000)
+	pairs := make(chan Pair, 1000)
 
+	var readerWg sync.WaitGroup
 	for _, file := range files {
-		wg.Add(1)
+		readerWg.Add(1)
 		go func(f string) {
-			defer wg.Done()
-			mapper(f, mapOut)
+			defer readerWg.Done()
+			utils.ReadFileLines(f, lines)
 		}(file)
 	}
 
 	go func() {
-		wg.Wait()
-		close(mapOut)
+		readerWg.Wait()
+		close(lines)
 	}()
 
+	var workerWg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			mapper(lines, pairs)
+		}()
+	}
 
-	words := reduce(mapOut)
+	go func() {
+		workerWg.Wait()
+		close(pairs)
+	}()
 
-	finalCounts := reducer(words)
+	finalCounts := reducer(pairs)
 
-	printTopWords(finalCounts, 100)
+	wordcount.PrintTopWords(finalCounts, topWordsCount)
 }
 
-func mapper(filename string, out chan<- Pair) {
-	file, err := os.Open(filepath.Clean(filename))
-	if err != nil {
-		fmt.Printf("Ошибка открытия файла %s: %v\n", filename, err)
-		return
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		
-
-		// фаин фаоут в отдельную горутины с 73 по 86 кол воркеров ограниченно
-		words := tokenize(line)
-		counted := map[string]int{}
+func mapper(in <-chan string, out chan<- Pair) {
+	for line := range in {
+		words := utils.Tokenize(line)
+		counted := make(map[string]int)
 
 		for _, word := range words {
-			if _, ok := prepositions[word]; ok || !isRussian(word) {
+			if _, ok := utils.Prepositions[word]; ok || !utils.IsRussian(word) {
 				continue
 			}
-			word = normalize(word)
+			word = utils.Normalize(word)
 			counted[word]++
 		}
 
@@ -87,67 +77,10 @@ func mapper(filename string, out chan<- Pair) {
 	}
 }
 
-// переместить эту логику в reducer и сразу аккумулировать с канала
-func reduce(in <-chan Pair) map[string][]int {
-	shuffled := make(map[string][]int)
-
+func reducer(in <-chan Pair) wordcount.WordCount {
+	result := make(wordcount.WordCount)
 	for pair := range in {
-		shuffled[pair.Word] = append(shuffled[pair.Word], pair.Count)
-	}
-
-	return shuffled
-}
-
-// тут канал арг 
-func reducer(shuffled map[string][]int) WordCount {
-	result := make(WordCount)
-	for word, counts := range shuffled {
-		total := 0
-		for _, c := range counts {
-			total += c
-		}
-		result[word] = total
+		result[pair.Word] += pair.Count
 	}
 	return result
-}
-
-func tokenize(line string) []string {
-	tokens := wordRegex.FindAllString(line, -1)
-	for i, token := range tokens {
-		tokens[i] = strings.ToLower(token)
-	}
-	return tokens
-}
-
-func isRussian(word string) bool {
-	return cyrillicCheck.MatchString(word)
-}
-
-func normalize(word string) string {
-
-	return word
-}
-
-func printTopWords(counts WordCount, top int) {
-	type kv struct {
-		Word  string
-		Count int
-	}
-
-
-	//slice is copy func 
-	var sorted []kv
-	for k, v := range counts {
-		sorted = append(sorted, kv{k, v})
-	}
-
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Count > sorted[j].Count
-	})
-
-	// срез слайса и все
-	fmt.Printf("\nТоп %d слов:\n", top)
-	for i := 0; i < top && i < len(sorted); i++ {
-		fmt.Printf("%2d. %s — %d\n", i+1, sorted[i].Word, sorted[i].Count)
-	}
 }
